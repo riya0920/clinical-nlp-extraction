@@ -18,7 +18,7 @@ python -m pytest tests -q     # 29 tests
 
 ---
 
-## The four things worth reading
+## The five things worth reading
 
 ### 1. Two evaluation sets, and only one of them is the number
 
@@ -65,8 +65,9 @@ not a compliance event.
 **Which system consumes the output decides which error you tune against.** A
 single F1 averages them as though they were interchangeable, which is how a
 model gets shipped to a risk-adjustment team optimised for the wrong error.
-That is also the answer to *"your transformer beats rules overall but loses on
-negation precision — what ships?"*: to a risk-adjustment team, the rules do.
+That is also the frame for *"your transformer beats rules overall but loses on
+negation precision — what ships?"* — and §5 now **measures** it rather than
+answering from received wisdom. The measurement partly contradicts the premise.
 
 ### 3. Terminology mapping, with the bleed shown
 
