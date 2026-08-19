@@ -10,6 +10,7 @@ care-gap workflow will all read it as fact.
 
 import os
 import sys
+from collections import Counter
 
 import pytest
 
@@ -233,3 +234,62 @@ def test_generated_notes_produce_extractions():
     corpus = notes.build_corpus(20)
     total = sum(len(E.extract(n)) for n in corpus)
     assert total > 60, "generator and extractor have drifted apart"
+
+
+# ---------------------------------------------------------------------------
+# The learned baseline and the bakeoff
+# ---------------------------------------------------------------------------
+import assertion_ml as AML
+
+
+def test_generated_corpus_spans_are_exact():
+    """Spans are built by construction, not by searching for the surface form
+    afterwards -- 'diabetes' occurs inside 'type 2 diabetes' and a search would
+    mis-locate it."""
+    rows = AML.make_corpus(n=400, seed=1)
+    for r in rows:
+        assert r["text"][r["start"]:r["end"]].lower() in AML.SURFACES
+
+
+def test_generated_corpus_covers_every_assertion_class():
+    rows = AML.make_corpus(n=600, seed=2)
+    assert set(r["assertion"] for r in rows) == set(AML.TRAIN_TRIGGERS)
+
+
+def test_left_and_right_context_are_vectorised_separately():
+    """Direction carries the meaning: 'no evidence of pneumonia' and
+    'pneumonia, no evidence of recurrence' share a bag of words and mean
+    different things. A single bag over the sentence throws that away."""
+    row = {"text": "no evidence of pneumonia today", "start": 15, "end": 24,
+           "concept": "pneumonia", "assertion": "absent"}
+    left = AML.ContextExtractor("left").transform([row])[0]
+    right = AML.ContextExtractor("right").transform([row])[0]
+    assert "no evidence of" in left
+    assert "no evidence of" not in right
+    assert "today" in right
+
+
+def test_learned_model_actually_learns_the_task():
+    """A floor check. If the classifier cannot beat the majority class on the
+    data it was trained for, the bakeoff is measuring a broken model rather
+    than a real trade-off."""
+    train_rows = AML.make_corpus(n=2000, seed=5)
+    test_rows = AML.make_corpus(n=500, seed=99)
+    clf = AML.train(train_rows)
+    pred = AML.predict(clf, test_rows)
+    truth = [r["assertion"] for r in test_rows]
+    acc = sum(t == p for t, p in zip(truth, pred)) / len(truth)
+    majority = max(Counter(truth).values()) / len(truth)
+    assert acc > majority + 0.3, f"accuracy {acc:.3f} vs majority {majority:.3f}"
+
+
+def test_both_systems_are_scored_on_identical_spans():
+    """Otherwise a difference in what was FOUND contaminates a measurement of
+    how it was LABELLED."""
+    import heldout
+    rows, truth = AML.rows_from_gold(heldout.CASES, E.extract)
+    assert len(rows) == len(truth)
+    for r in rows:
+        found = [e for e in E.extract(r["text"])
+                 if e.start == r["start"] and e.end == r["end"]]
+        assert found, "every scored row must correspond to a real extracted span"

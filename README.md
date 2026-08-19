@@ -1,4 +1,4 @@
-# ML-3 — Clinical NLP: note to structured (first 20%)
+# ML-3 — Clinical NLP: note to structured (~50% build)
 
 **No real clinical text is used anywhere in this project.** Every sentence is
 either generated from templates in `src/notes.py` or hand-authored by me in
@@ -9,10 +9,11 @@ A ConText assertion layer, terminology mapping with its failures shown, and
 FHIR output where family history never becomes a patient condition.
 
 ```bash
-python run_eval.py        # entity F1, assertion confusion matrix, mapping, FHIR
-python write_report.py    # -> docs/EVALUATION.md
-python src/notes.py       # one generated note -> entities -> FHIR bundle
-python -m pytest tests -q # 24 tests
+python run_eval.py            # entity F1, assertion confusion matrix, mapping, FHIR
+python compare_assertion.py   # rules vs a learned classifier -- the bakeoff
+python write_report.py        # -> docs/EVALUATION.md
+python src/notes.py           # one generated note -> entities -> FHIR bundle
+python -m pytest tests -q     # 29 tests
 ```
 
 ---
@@ -125,6 +126,65 @@ is not evidence.
 
 ---
 
+### 5. Rules vs a learned model, measured instead of argued
+
+The earlier build could not answer the spec's own question — *"your transformer
+beats rules overall but loses on negation precision; what ships to a
+risk-adjustment team?"* — because only the rules existed. `compare_assertion.py`
+runs the bakeoff. Both systems label the **same entity spans**, so the
+comparison isolates the assertion decision.
+
+The learned model is a supervised **n-gram logistic regression** over separated
+left/right context. It is **not** a pretrained clinical transformer — no
+HuggingFace or BERT weights are available offline, and a transformer trained
+from scratch on templated sentences would be a strawman. It is labelled as what
+it is everywhere it appears.
+
+Three evaluation sets, split by **contamination**, because the rules were tuned
+on one of them:
+
+| set | learned | rules | note |
+|---|---|---|---|
+| in-distribution (generated) | 97.9% | 100% | rules win **by construction** — the generator's triggers are a subset of the rule lexicon. Circular; shown only to prove the model learned the task. |
+| **held-out (clean for both)** | **60.0%** | **93.3%** | **the row that counts** |
+| adversarial (rules tuned on it) | 61.0% | 100% | upper bound on the rules' advantage, not a measurement of it |
+
+On the clean held-out set:
+
+| metric | learned | rules |
+|---|---|---|
+| accuracy | 0.600 | **0.933** |
+| precision on `absent` | 0.667 | **1.000** |
+| recall on `absent` | 0.667 | **0.778** |
+
+**But the headline hides a reversal that matters more.** Counting the error that
+actually costs money — a negated finding reported as `present`:
+
+```
+negated finding reported as PRESENT   learned 0/9   rules 2/9
+```
+
+**The learned model leaks fewer negations than the rules do.** The rules' two
+misses are the `neither X nor Y` construction, absent from their lexicon. So
+*"rules win on negation precision"* is **not a law**: rules win when the
+phrasing is in the lexicon and fail hard when it is not, while the learned model
+degrades more evenly. That is the real shape of the trade-off, and it is the
+opposite of what the interview question presumes — which is exactly why the
+question is worth measuring rather than answering from received wisdom.
+
+**What ships still depends on the consumer.** To a risk-adjustment team: the
+rules, because they fail *legibly* — a missed negation is a lexicon entry
+someone can add and a regression test someone can pin, whereas a learned model's
+error is a retraining cycle with no guarantee that specific case is fixed. To a
+research cohort-building team the answer flips: recall matters more, a human
+reviews the cohort anyway, and coverage of unseen phrasing is worth more than
+precision. Same measurements, different consumer, different answer.
+
+Honest limits, printed by the script itself: the learned model trains on
+templated text so its OOD drop is inflated by the generator's regularity; an
+n-gram model is not a transformer and a real clinical transformer would narrow
+the gap; and the adversarial row is excluded from the headline for contamination.
+
 ## Bugs this evaluation caught
 
 - **Pseudo-negation masking silenced the uncertainty axis.** "Cannot be ruled
@@ -164,10 +224,10 @@ would stop meaning anything. Categorised in
 
 ## What is missing (the other 80%)
 
-- **No transformer baseline.** The spec asks for a fine-tuned model compared
-  against the rule layer. Only the rule layer exists, so the comparison the
-  interview question depends on ("rules win on negation precision more often
-  than people expect") is *argued*, not *measured*, here.
+- **Still no pretrained transformer.** The bakeoff uses an n-gram logistic
+  regression, which is a legitimate pre-transformer baseline but not
+  ClinicalBERT. The OOD gap would narrow with real pretraining, and no claim
+  about transformer performance is made.
 - **No medspaCy / scispaCy.** Not installed; ConText and the NER are
   hand-rolled. Fine for the rule layer, but there is no real linguistic
   parsing — no POS tags, no dependency parse, so medication attribute
@@ -195,5 +255,7 @@ would stop meaning anything. Categorised in
 | `gold/adversarial.py` | 75 hand-authored dev sentences |
 | `gold/heldout.py` | 30 hand-authored held-out sentences, scored once |
 | `run_eval.py` | F1, confusion matrix, mapping, FHIR emission, throughput |
+| `src/assertion_ml.py` | labelled-corpus generator + the learned baseline |
+| `compare_assertion.py` | the rules-vs-learned bakeoff, split by contamination |
 | `docs/ANNOTATION_GUIDELINE.md` | the guideline, written as a deliverable |
-| `tests/test_nlp.py` | 24 tests |
+| `tests/test_nlp.py` | 29 tests |
