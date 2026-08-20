@@ -223,7 +223,7 @@ would stop meaning anything. Categorised in
 3. **lexicon coverage** — "neither X nor Y" is not a trigger. The characteristic
    rule-based failure: unenumerated phrasing, failing silently to `present`.
 
-## What is missing (the other 80%)
+## What is still missing
 
 - **Still no pretrained transformer.** The bakeoff uses an n-gram logistic
   regression, which is a legitimate pre-transformer baseline but not
