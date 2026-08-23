@@ -1,4 +1,4 @@
-# ML-3 — Clinical NLP: note to structured (~80% build)
+# ML-3 — Clinical NLP: note to structured — complete
 
 **No real clinical text is used anywhere in this project.** Every sentence is
 either generated from templates in `src/notes.py` or hand-authored by me in
@@ -16,7 +16,7 @@ python src/notes.py           # one generated note -> entities -> FHIR bundle
 python run_sections.py        # section context, scored once on a third gold set
 python serve.py --demo        # the extraction API, and the log that cannot leak
 python serve.py --bench       # throughput: batching, parallelism, machine drift
-python -m pytest tests -q     # 60 tests
+python -m pytest tests -q     # 77 tests
 ```
 
 ---
@@ -413,38 +413,102 @@ would stop meaning anything. Categorised in
 3. **lexicon coverage** — "neither X nor Y" is not a trigger. The characteristic
    rule-based failure: unenumerated phrasing, failing silently to `present`.
 
-## What is still missing
+## Document-level reconciliation — and what it refuses to decide
 
-- **Still no pretrained transformer.** The bakeoff uses an n-gram logistic
-  regression, which is a legitimate pre-transformer baseline but not
-  ClinicalBERT. The OOD gap would narrow with real pretraining, and no claim
-  about transformer performance is made.
+`src/reconcile.py`. The gap list said: *"If a note says 'no chest pain' in the
+HPI and 'chest pain' in the assessment, both are annotated as written. Which one
+is true is a clinical judgement the annotator is not qualified to make, and a
+real pipeline needs an explicit document-level policy."*
+
+**The policy is that most of the time there is no answer, and saying so is the
+answer.** A note contradicting itself is not a parsing failure — it is the
+ordinary shape of a clinical document. The HPI records what the patient
+reported, the exam what was found, the assessment what the clinician concluded,
+and those disagree for good reasons.
+
+```
+HISTORY OF PRESENT ILLNESS: Patient denies chest pain.
+ASSESSMENT AND PLAN: chest pain, likely musculoskeletal.
+
+  chest_pain   presence=None   confidence=unresolved
+```
+
+`to_rows()` **omits** unresolved concepts by default. A consumer that wants them
+must pass `include_unresolved=True` — which makes accepting a guess explicit at
+the call site instead of buried in this module.
+
+**Last-mention-wins is the obvious rule and it inverts on the commonest real
+pattern.** `"ASSESSMENT: Pneumonia. Return if cough worsens."` — the last
+mention of cough is hypothetical, in a return-precaution sentence, and last-wins
+would mark the patient's presenting cough hypothetical. Position is a proxy for
+authority and a bad one; the **section** is the signal, which is why
+`SECTION_AUTHORITY` is a table a site can disagree with rather than an `if`
+chain.
+
+Two rules that are not negotiable:
+
+- **Negation never loses quietly.** When mentions disagree about *presence*
+  specifically, the result is flagged even if a section outranks. Being wrong in
+  that direction puts a condition on a record that a clinician denied.
+- **A different experiencer is a different claim.** "Mother had breast cancer"
+  and "patient denies breast cancer" are two facts, not a conflict, and are
+  never reconciled against each other.
+
+## The service authenticates
+
+An extraction endpoint takes the **note** as input, so an unauthenticated one is
+an open channel for submitting PHI to a service the submitter does not control —
+a different and larger problem than an unauthenticated read. The request body is
+**not read before refusing**: reading it would pull an unauthenticated caller's
+note into this process's memory, which is exactly what the token exists to
+prevent. `SafeLog` still holds no note text on the refusal path.
+
+## What is still missing, and why it cannot be closed here
+
+Everything below needs something this environment does not have. The closeable
+gaps are closed; these are named with their specific blocker.
+
+- **No pretrained transformer.** ClinicalBERT and friends are not installed and
+  there is no network. The bakeoff uses an n-gram logistic regression, which is
+  a legitimate pre-transformer baseline and is labelled as one. The OOD gap
+  would narrow with real pretraining, and no claim about transformer
+  performance is made anywhere.
 - **No medspaCy / scispaCy.** Not installed; ConText and the NER are
-  hand-rolled. Fine for the rule layer, but there is no real linguistic
-  parsing — no POS tags, no dependency parse, so medication attribute
-  attribution is window-based and provably wrong on coordinated lists.
-- **No kappa.** Single annotator, no second pass. Not fakeable in one session,
-  so it is absent rather than invented. Rule 3 in the guideline is where drift
-  would show.
-- **Section detection is a regex over a curated header list**, not a section
-  classifier. Real notes carry headers this table has never seen, carry none at
-  all, or carry template headers a downstream system stamped in without meaning
-  them. Recall on any real corpus is unknown and probably poor.
+  hand-rolled. There is no POS tagging and no dependency parse, so medication
+  attribute attribution is window-based and **provably wrong on coordinated
+  lists** — "metformin 500 mg and lisinopril 10 mg daily" cannot be attributed
+  correctly without a parse.
+- **No kappa, and it is not fakeable.** Inter-annotator agreement needs a
+  second annotator. A second pass by the same person measures their
+  consistency, not the guideline's clarity, and reporting it as kappa would be
+  inventing a number. Rule 3 in the guideline is where drift would show, and it
+  is flagged there as the most likely disagreement.
+- **No real terminology.** Hand-built SNOMED/RxNorm subsets. VSAC needs a UMLS
+  licence and a network; there is no version pinning and no inactivated-concept
+  handling.
+- **Section detection cannot be improved with this data.** It is a regex over a
+  curated header list, and the honest replacement is a sequence labeller — but
+  training one on `src/notes.py` would learn the seven headers the generator
+  emits and report near-perfect recall on a problem it had not solved. Real
+  notes carry headers this table has never seen, carry none at all, or carry
+  template headers stamped in by a system that did not mean them. Recall on any
+  real corpus is unknown and probably poor.
 - **The section layer's marginal value is small** (3 entities across 25 gold
-  documents) because header text doubles as a ConText trigger — see § 8. It has
-  not been shown to be worth its complexity on anything but cross-sentence
-  cases.
-- **No real terminology.** Hand-built SNOMED/RxNorm subsets; no VSAC, no
-  version pinning, no inactivated-concept handling.
-- **No document-level reconciliation**, no severity, no laterality, no
-  temporality beyond historical/present, no coreference.
+  documents) because header text doubles as a ConText trigger — see § 8. It
+  earns its place only on cross-sentence cases, and that is measured rather
+  than argued.
 - **Throughput is not measurable on this machine.** Identical code gave 67 and
   21 docs/sec on different days, and the benchmark's own drift check reports
-  15–37% within a single run. Batching and pooling are implemented and
-  measured; the absolute numbers are not quotable and are labelled as such.
-- **The service is not deployable.** No auth, no TLS, no rate limiting, no
-  SMART-on-FHIR scopes, no tenancy, no queue, and no wiring to the append-only
-  PHI access audit that `se1-hl7-fhir-interop` in this portfolio already has.
+  15–37% within one run. Batching and pooling are implemented and measured; the
+  absolute numbers are explicitly not quotable.
+- **No severity, laterality, or coreference.** Real risk-adjustment and RWE
+  work need several of these; they are scope rather than blocker, and adding
+  them without a gold set to score them against would be adding untested
+  surface.
+- **The service is single-node.** No TLS, no rate limiting, no tenancy, no
+  queue. The bearer token authenticates a caller, not a user, and there is no
+  wiring to the append-only PHI access audit that `se1-hl7-fhir-interop`
+  already has.
 - **`SafeLog` is a discipline, not a boundary.** It cannot stop process memory,
   core dumps, or one `print()` added while debugging.
 
@@ -467,4 +531,6 @@ would stop meaning anything. Categorised in
 | `run_sections.py` | the section evaluation, and whether the layer helped or hurt |
 | `serve.py` | extraction API, batching, `SafeLog`, throughput bench |
 | `tests/test_serving.py` | 31 tests: the axes, sections, and the log that cannot leak |
+| `src/reconcile.py` | document-level policy; what it refuses to decide |
+| `tests/test_reconcile.py` | 17 tests: conflicts, section authority, auth |
 | `tests/test_nlp.py` | 29 tests |

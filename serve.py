@@ -43,6 +43,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import sys
@@ -54,11 +55,30 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
+import reconcile as RE
 import sections as S
 from extract import extract
 from fhir_out import bundle as fhir_bundle, to_fhir
 
 MAX_BYTES = 200_000
+
+# THE README CALLED THE SERVICE "not deployable ... no auth". A bearer token is
+# not an identity system and does not pretend to be one -- se1-hl7-fhir-interop
+# has the SMART scope layer this should really sit behind. It is here because
+# an extraction endpoint takes the NOTE as input, so an unauthenticated one is
+# an open channel for anyone to submit PHI to a service they do not control,
+# which is a different and larger problem than an unauthenticated read.
+AUTH_TOKEN = None
+
+
+def _authorised(header):
+    if AUTH_TOKEN is None:
+        return True, None
+    if not header or not header.startswith("Bearer "):
+        return False, "no bearer token"
+    if not hmac.compare_digest(header[7:], AUTH_TOKEN):
+        return False, "token does not match"
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +143,8 @@ LOG = SafeLog()
 # work
 # ---------------------------------------------------------------------------
 
-def extract_document(text, *, with_sections=True, with_fhir=False):
+def extract_document(text, *, with_sections=True, with_fhir=False,
+                     with_reconciliation=False):
     ents = extract(text)
     changes = []
     if with_sections:
@@ -137,6 +158,8 @@ def extract_document(text, *, with_sections=True, with_fhir=False):
     }
     if with_fhir:
         body["fhir"] = fhir_bundle(to_fhir(ents))
+    if with_reconciliation:
+        body["reconciliation"] = RE.reconcile(ents, text, S.find_sections)
     return body
 
 
@@ -215,6 +238,18 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         n = int(self.headers.get("Content-Length") or 0)
 
+        ok, why = _authorised(self.headers.get("Authorization"))
+        if not ok:
+            # The body is NOT read before refusing. Reading it would pull an
+            # unauthenticated caller's note into this process's memory, which
+            # is the thing the token exists to prevent.
+            return self._send(401, {
+                "error": "authentication required", "detail": why,
+                "why": ("this endpoint accepts clinical text as input. An "
+                        "unauthenticated one is an open channel for submitting "
+                        "PHI to a service the submitter does not control.")},
+                request_id=rid, route=path, t0=t0, error_class="Unauthorised")
+
         if n > MAX_BYTES:
             self.rfile.read(min(n, MAX_BYTES))
             return self._send(413, {"error": "payload too large",
@@ -234,6 +269,7 @@ class Handler(BaseHTTPRequestHandler):
                               error_class=type(exc).__name__)
 
         want_fhir = bool(body.get("fhir"))
+        want_rec = bool(body.get("reconcile"))
         use_sections = body.get("sections", True)
 
         try:
@@ -246,7 +282,8 @@ class Handler(BaseHTTPRequestHandler):
                                       request_id=rid, route=path, t0=t0,
                                       n_bytes=n)
                 out = extract_document(text, with_sections=use_sections,
-                                       with_fhir=want_fhir)
+                                       with_fhir=want_fhir,
+                                       with_reconciliation=want_rec)
                 out["disclaimer"] = DISCLAIMER
                 return self._send(200, out, request_id=rid, route=path, t0=t0,
                                   n_bytes=n, n_documents=1,
@@ -273,7 +310,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "error": "empty or non-string text"})
                         continue
                     r = extract_document(text, with_sections=use_sections,
-                                         with_fhir=want_fhir)
+                                         with_fhir=want_fhir,
+                                         with_reconciliation=want_rec)
                     r.update({"id": doc_id, "ok": True})
                     results.append(r)
                 total = sum(r.get("n_entities", 0) for r in results)
