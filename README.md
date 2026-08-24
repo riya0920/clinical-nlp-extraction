@@ -1,4 +1,4 @@
-# ML-3 — Clinical NLP: note to structured — complete
+# ML-3 — Clinical NLP: note to structured — working system, 10 known gaps
 
 **No real clinical text is used anywhere in this project.** Every sentence is
 either generated from templates in `src/notes.py` or hand-authored by me in
