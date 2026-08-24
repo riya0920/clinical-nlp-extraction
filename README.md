@@ -468,12 +468,16 @@ prevent. `SafeLog` still holds no note text on the refusal path.
 Everything below needs something this environment does not have. The closeable
 gaps are closed; these are named with their specific blocker.
 
-- **No pretrained transformer.** ClinicalBERT and friends are not installed and
+- **No pretrained transformer.** `transformers` **is** installed; the blocker
+  is that **huggingface.co is unreachable** from here, so no weights can be
+  fetched. ClinicalBERT and friends are unavailable and
   there is no network. The bakeoff uses an n-gram logistic regression, which is
   a legitimate pre-transformer baseline and is labelled as one. The OOD gap
   would narrow with real pretraining, and no claim about transformer
   performance is made anywhere.
-- **No medspaCy / scispaCy.** Not installed; ConText and the NER are
+- **No medspaCy / scispaCy.** GENUINELY BLOCKED here: `medspacy` cannot be
+  installed because its `PyRuSH` dependency fails to build — the compile step
+  is stopped by a Windows Application Control policy. ConText and the NER are
   hand-rolled. There is no POS tagging and no dependency parse, so medication
   attribute attribution is window-based and **provably wrong on coordinated
   lists** — "metformin 500 mg and lisinopril 10 mg daily" cannot be attributed
